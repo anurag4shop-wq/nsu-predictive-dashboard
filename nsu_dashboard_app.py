@@ -4,7 +4,7 @@ sys.path.append(r'D:\Users\Asus\AppData\Local\Packages\PythonSoftwareFoundation.
 import streamlit as st
 import pandas as pd
 import numpy as np
-from sklearn.ensemble import ExtraTreesRegressor, VotingRegressor
+from sklearn.ensemble import ExtraTreesRegressor
 from sklearn.linear_model import RidgeCV
 from sklearn.preprocessing import StandardScaler
 from sklearn.pipeline import Pipeline
@@ -64,7 +64,6 @@ def load_data(path):
     df_merged = d.rename(columns=rename)
 
     # Automated Anomaly & Data Quality Filtering
-    # 1. Operational shutdown / zero flow filtering
     valid_ops = (
         (df_merged["nsu_feed"] > 5) & 
         (df_merged["reflux_flow"] > 1) & 
@@ -75,7 +74,7 @@ def load_data(path):
     )
     df_clean = df_merged[valid_ops].copy()
     
-    # 2. 3-Sigma Lab Target Outlier Rejection
+    # 3-Sigma Lab Target Outlier Rejection
     targets = ["IBP_C5-90","FBP_C5-90","IBP_C5 90-120","FBP_C5 90-120"]
     for y in targets:
         mean = df_clean[y].mean()
@@ -91,10 +90,6 @@ FEATURES = [
 TARGETS = ["IBP_C5-90", "FBP_C5-90", "IBP_C5 90-120", "FBP_C5 90-120"]
 
 class HybridPredictor:
-    """
-    Hybrid Regularized Model: Combines Scaled Ridge Linear Regression for concept drift
-    & trend extrapolation with ExtraTreesRegressor for non-linear process dynamics.
-    """
     def __init__(self):
         self.ridge_pipe = Pipeline([
             ('scaler', StandardScaler()),
@@ -117,7 +112,6 @@ class HybridPredictor:
         return self.w_ridge * p_ridge + self.w_tree * p_tree
 
     def feature_importances(self, feature_names):
-        # Scale-adjusted Linear Coefficients magnitude + Tree Feature Importances
         ridge_coefs = np.abs(self.ridge_pipe.named_steps['ridge'].coef_)
         if ridge_coefs.sum() > 0:
             ridge_norm = ridge_coefs / ridge_coefs.sum()
@@ -138,12 +132,9 @@ def train_models(df):
     tr, te = d.iloc[:cut], d.iloc[cut:]
     
     models, rows, predictions = {}, [], te[["date","shift"]].copy()
-    
-    # 5-Fold Walk-Forward Time Series Cross Validation
     tscv = TimeSeriesSplit(n_splits=5)
     
     for y in TARGETS:
-        # 1. Evaluate 5-Fold Walk-Forward CV
         cv_r2_list, cv_mae_list = [], []
         for train_idx, test_idx in tscv.split(d):
             cv_tr, cv_te = d.iloc[train_idx], d.iloc[test_idx]
@@ -156,7 +147,6 @@ def train_models(df):
         cv_r2 = np.mean(cv_r2_list)
         cv_mae = np.mean(cv_mae_list)
         
-        # 2. Train on 80/20 Holdout
         model = HybridPredictor()
         model.fit(tr[FEATURES], tr[y])
         p = model.predict(te[FEATURES])
@@ -182,7 +172,7 @@ df = load_data(XLSX)
 d, tr, te, models, metrics, predictions = train_models(df)
 
 st.title("Naphtha Splitter Unit — Advanced Predictive Process Dashboard")
-st.caption("Data-driven Hybrid Regularized Model (Ridge + ExtraTrees) trained on DCS + laboratory dataset. Incorporates automated anomaly filtering and process gain matrix alignment.")
+st.caption("Data-driven Hybrid Regularized Model with Interactive User-Editable Process Control Gain Matrix.")
 
 # Sidebar controls
 st.sidebar.header("NSU Operating Inputs (10 Variables)")
@@ -202,25 +192,89 @@ nsu_feed = slider("8. NSU Feed Flow (T/hr)", "nsu_feed", 0.1)
 feed_t = slider("9. NSU Feed Temperature (°C)", "feed_temp", 0.1)
 reboiler_steam = slider("10. Reboiler MP Steam Flow (T/hr)", "reboiler_steam", 0.1)
 
-x = pd.DataFrame([{
+st.sidebar.markdown("---")
+st.sidebar.subheader("🎛️ Gain Matrix Physics Tuning")
+lambda_blend = st.sidebar.slider(
+    "Gain Matrix Influence Weight (λ)", 
+    min_value=0.0, max_value=1.0, value=0.40, step=0.05,
+    help="0.0 = Pure Data-Driven ML | 1.0 = Pure Gain Matrix Physics | 0.40 = Blended Hybrid (40% Physics, 60% ML)"
+)
+
+# Initialize Session State for Editable Process Control Gain Matrix
+if "gain_matrix_data" not in st.session_state:
+    st.session_state["gain_matrix_data"] = pd.DataFrame([
+        {"Process Variable": "1. Stabilizer Bottom T", "Feature Key": "stab_bottom_t", "C5-90 IBP Sign": "+", "C5-90 IBP Weight (%)": 40.0, "C5-90 FBP Sign": "0", "C5-90 FBP Weight (%)": 0.0, "90-160 IBP Sign": "0", "90-160 IBP Weight (%)": 0.0, "90-160 FBP Sign": "0", "90-160 FBP Weight (%)": 0.0},
+        {"Process Variable": "2. NSU Top P", "Feature Key": "pressure", "C5-90 IBP Sign": "+", "C5-90 IBP Weight (%)": 25.0, "C5-90 FBP Sign": "+", "C5-90 FBP Weight (%)": 15.0, "90-160 IBP Sign": "+", "90-160 IBP Weight (%)": 15.0, "90-160 FBP Sign": "0", "90-160 FBP Weight (%)": 0.0},
+        {"Process Variable": "3. NSU Reflux Flow", "Feature Key": "reflux_flow", "C5-90 IBP Sign": "+", "C5-90 IBP Weight (%)": 10.0, "C5-90 FBP Sign": "-", "C5-90 FBP Weight (%)": 45.0, "90-160 IBP Sign": "-", "90-160 IBP Weight (%)": 25.0, "90-160 FBP Sign": "0", "90-160 FBP Weight (%)": 0.0},
+        {"Process Variable": "4. Side Cut Flow", "Feature Key": "side_draw", "C5-90 IBP Sign": "0", "C5-90 IBP Weight (%)": 0.0, "C5-90 FBP Sign": "+", "C5-90 FBP Weight (%)": 10.0, "90-160 IBP Sign": "+", "90-160 IBP Weight (%)": 25.0, "90-160 FBP Sign": "0", "90-160 FBP Weight (%)": 0.0},
+        {"Process Variable": "5. Reboiler MP Steam Flow (and NSU Bottom T)", "Feature Key": "reboiler_steam", "C5-90 IBP Sign": "-", "C5-90 IBP Weight (%)": 25.0, "C5-90 FBP Sign": "+", "C5-90 FBP Weight (%)": 30.0, "90-160 IBP Sign": "+", "90-160 IBP Weight (%)": 25.0, "90-160 FBP Sign": "0", "90-160 FBP Weight (%)": 0.0},
+        {"Process Variable": "6. CDU Column Top T", "Feature Key": "cdu_top_temp", "C5-90 IBP Sign": "0", "C5-90 IBP Weight (%)": 0.0, "C5-90 FBP Sign": "0", "C5-90 FBP Weight (%)": 0.0, "90-160 IBP Sign": "0", "90-160 IBP Weight (%)": 0.0, "90-160 FBP Sign": "+", "90-160 FBP Weight (%)": 100.0}
+    ])
+
+x_input = pd.DataFrame([{
     "reflux_flow": reflux, "top_temp": top_t, "bottom_temp": bottom_t,
     "pressure": pressure, "side_draw": side, "cdu_top_temp": cdu_t,
     "stab_bottom_t": stab_t, "nsu_feed": nsu_feed, "feed_temp": feed_t,
     "reboiler_steam": reboiler_steam
 }])
 
-pred = {y: float(models[y].predict(x)[0]) for y in TARGETS}
+# Calculate Predictions Dynamic Adjustment Function
+def calculate_predictions(x_df, gain_df, lambda_val):
+    ml_preds = {y: float(models[y].predict(x_df)[0]) for y in TARGETS}
+    if lambda_val == 0.0:
+        return ml_preds
+        
+    target_map = {
+        "IBP_C5-90": ("C5-90 IBP Sign", "C5-90 IBP Weight (%)"),
+        "FBP_C5-90": ("C5-90 FBP Sign", "C5-90 FBP Weight (%)"),
+        "IBP_C5 90-120": ("90-160 IBP Sign", "90-160 IBP Weight (%)"),
+        "FBP_C5 90-120": ("90-160 FBP Sign", "90-160 FBP Weight (%)")
+    }
+    
+    final_preds = {}
+    for y, (sign_col, weight_col) in target_map.items():
+        ml_pred = ml_preds[y]
+        y_std = float(d[y].std())
+        y_median = float(d[y].median())
+        
+        physics_delta = 0.0
+        for _, row in gain_df.iterrows():
+            feat = row["Feature Key"]
+            sign_str = str(row[sign_col]).strip()
+            weight_pct = float(row[weight_col])
+            
+            sign = 1.0 if sign_str == "+" else (-1.0 if sign_str == "-" else 0.0)
+            if sign != 0.0 and weight_pct > 0:
+                feat_val = float(x_df[feat].values[0])
+                feat_median = float(d[feat].median())
+                feat_std = float(d[feat].std()) if float(d[feat].std()) > 0 else 1.0
+                
+                z_score = (feat_val - feat_median) / feat_std
+                physics_delta += sign * (weight_pct / 100.0) * z_score * (y_std * 0.75)
+                
+        physics_pred = y_median + physics_delta
+        final_preds[y] = (1.0 - lambda_val) * ml_pred + lambda_val * physics_pred
+        
+    return final_preds
 
+# Compute live predictions using the active gain matrix
+current_gain_matrix = st.session_state["gain_matrix_data"]
+pred = calculate_predictions(x_input, current_gain_matrix, lambda_blend)
+
+# Display Top KPI Metrics
 c1, c2, c3, c4 = st.columns(4)
 c1.metric("C5-90 IBP (Overhead Initial)", f"{pred['IBP_C5-90']:.1f} °C")
 c2.metric("C5-90 FBP (Overhead Final)", f"{pred['FBP_C5-90']:.1f} °C")
 c3.metric("90-160 IBP (Bottoms Initial)", f"{pred['IBP_C5 90-120']:.1f} °C")
 c4.metric("90-160 FBP (Bottoms Final)", f"{pred['FBP_C5 90-120']:.1f} °C")
 
-tab1, tab2, tab3, tab4 = st.tabs(["Live Scenario Simulation", "Historical Trends", "Model Validation & Metrics", "Process Control Gain Matrix"])
+tab1, tab2, tab3, tab4 = st.tabs([
+    "Live Scenario Simulation", "Historical Trends", 
+    "Model Validation & Metrics", "⚙️ Interactive Process Control Gain Matrix"
+])
 
 with tab1:
-    st.subheader("Current Operating Scenario & Input State")
+    st.subheader("Live Scenario Simulation & Operating State")
     st.dataframe(pd.DataFrame({
         "Process Variable": [
             "NSU Reflux Flow", "NSU Top Temperature", "NSU Bottom Temperature", 
@@ -230,23 +284,23 @@ with tab1:
         "Input Value": [reflux, top_t, bottom_t, pressure, side, cdu_t, stab_t, nsu_feed, feed_t, reboiler_steam],
         "Unit": ["T/hr", "°C", "°C", "kg/cm²g", "T/hr", "°C", "°C", "T/hr", "°C", "T/hr"],
         "Gain Matrix Category": ["MV", "MV", "MV", "MV", "MV", "DV (Feedforward)", "DV", "MV", "DV", "MV"]
-    }), use_container_width=True)
-    st.info("The scenario simulator uses a hybrid regularized ensemble (Ridge + ExtraTrees) to maintain trend stability outside historical boundaries. Note: C5 90-120 and 90-160 cuts are treated as equivalent in plant operational specs.")
+    }), width="stretch")
+    
+    st.info(f"Predictions reflect a **{int((1-lambda_blend)*100)}% Data-Driven ML + {int(lambda_blend*100)}% Gain Matrix Physics** blend. Adjust relative weightages or gain signs in Tab 4 to see instant dynamic model adjustments!")
 
 with tab2:
     st.subheader("Filtered Operational History")
     cols = ["date","shift","nsu_feed","reflux_flow","top_temp","bottom_temp","pressure","side_draw","reboiler_steam",
             "IBP_C5-90","FBP_C5-90","IBP_C5 90-120","FBP_C5 90-120"]
     st.line_chart(d.set_index("date")[["top_temp","bottom_temp","feed_temp"]])
-    st.dataframe(d[cols].sort_values("date", ascending=False).head(100), use_container_width=True)
+    st.dataframe(d[cols].sort_values("date", ascending=False).head(100), width="stretch")
 
 with tab3:
     st.subheader("Model Performance & Validation Metrics")
     st.dataframe(metrics.style.format({
         "Holdout MAE (°C)": "{:.2f}", "Holdout R²": "{:.3f}", "Holdout RMSE (°C)": "{:.2f}",
         "5-Fold CV MAE (°C)": "{:.2f}", "5-Fold CV R²": "{:.3f}"
-    }), use_container_width=True)
-    st.caption("Validation metrics compare an 80/20 chronological holdout test set with 5-Fold Walk-Forward Time-Series Cross Validation.")
+    }), width="stretch")
     
     target = st.selectbox("Select Target Cut Point", TARGETS)
     pcol = target + "_pred"
@@ -259,32 +313,58 @@ with tab3:
     st.bar_chart(fi)
 
 with tab4:
-    st.subheader("Naphtha Splitter Unit (NSU) — Multivariable Process Control Gain Matrix")
+    st.subheader("⚙️ Interactive Multivariable Process Control Gain Matrix")
     st.markdown("""
-    **Multivariable Predictive Control - Relative Weightage (%) & Directional Gain Signs (+ / -)**
+    **Edit Gain Signs (`+`, `-`, `0`) and Relative Weightages (`%`) below.**  
+    *Changes made in this table directly modify the predictive model's physical constraints and live predictions in real time!*
     """)
     
-    gain_matrix_df = pd.DataFrame([
-        {"Process Variable": "1. Stabilizer Bottom T", "C5-90 IBP": "+ (40%)", "C5-90 FBP": "0%", "90-160 IBP": "0%", "90-160 FBP": "0%"},
-        {"Process Variable": "2. NSU Top P", "C5-90 IBP": "+ (25%)", "C5-90 FBP": "+ (15%)", "90-160 IBP": "+ (15%)", "90-160 FBP": "0%"},
-        {"Process Variable": "3. NSU Reflux Flow", "C5-90 IBP": "+ (10%)", "C5-90 FBP": "- (45%)", "90-160 IBP": "- (25%)", "90-160 FBP": "0%"},
-        {"Process Variable": "4. Side Cut Flow", "C5-90 IBP": "0%", "C5-90 FBP": "+ (10%)", "90-160 IBP": "+ (25%)", "90-160 FBP": "0%"},
-        {"Process Variable": "5. Reboiler MP Steam Flow (and NSU Bottom T)", "C5-90 IBP": "- (25%)", "C5-90 FBP": "+ (30%)", "90-160 IBP": "+ (25%)", "90-160 FBP": "0%"},
-        {"Process Variable": "6. CDU Column Top T", "C5-90 IBP": "0%", "C5-90 FBP": "0%", "90-160 IBP": "0%", "90-160 FBP": "+ (100%)"}
-    ])
-    st.table(gain_matrix_df)
+    # Render Interactive Data Editor
+    edited_gain_df = st.data_editor(
+        st.session_state["gain_matrix_data"],
+        column_config={
+            "Process Variable": st.column_config.TextColumn("Process Variable", disabled=True),
+            "Feature Key": st.column_config.TextColumn("Feature Key", disabled=True),
+            "C5-90 IBP Sign": st.column_config.SelectboxColumn("C5-90 IBP Sign", options=["+", "-", "0"], default="+"),
+            "C5-90 IBP Weight (%)": st.column_config.NumberColumn("C5-90 IBP Weight (%)", min_value=0.0, max_value=100.0, step=5.0),
+            "C5-90 FBP Sign": st.column_config.SelectboxColumn("C5-90 FBP Sign", options=["+", "-", "0"], default="+"),
+            "C5-90 FBP Weight (%)": st.column_config.NumberColumn("C5-90 FBP Weight (%)", min_value=0.0, max_value=100.0, step=5.0),
+            "90-160 IBP Sign": st.column_config.SelectboxColumn("90-160 IBP Sign", options=["+", "-", "0"], default="+"),
+            "90-160 IBP Weight (%)": st.column_config.NumberColumn("90-160 IBP Weight (%)", min_value=0.0, max_value=100.0, step=5.0),
+            "90-160 FBP Sign": st.column_config.SelectboxColumn("90-160 FBP Sign", options=["+", "-", "0"], default="+"),
+            "90-160 FBP Weight (%)": st.column_config.NumberColumn("90-160 FBP Weight (%)", min_value=0.0, max_value=100.0, step=5.0),
+        },
+        hide_index=True,
+        width="stretch",
+        key="gain_matrix_editor"
+    )
     
+    # Save back to session state to trigger automatic model re-calculation
+    st.session_state["gain_matrix_data"] = edited_gain_df
+
+    col_btn1, col_btn2 = st.columns([1, 4])
+    with col_btn1:
+        if st.button("🔄 Reset Gain Matrix to Default"):
+            st.session_state["gain_matrix_data"] = pd.DataFrame([
+                {"Process Variable": "1. Stabilizer Bottom T", "Feature Key": "stab_bottom_t", "C5-90 IBP Sign": "+", "C5-90 IBP Weight (%)": 40.0, "C5-90 FBP Sign": "0", "C5-90 FBP Weight (%)": 0.0, "90-160 IBP Sign": "0", "90-160 IBP Weight (%)": 0.0, "90-160 FBP Sign": "0", "90-160 FBP Weight (%)": 0.0},
+                {"Process Variable": "2. NSU Top P", "Feature Key": "pressure", "C5-90 IBP Sign": "+", "C5-90 IBP Weight (%)": 25.0, "C5-90 FBP Sign": "+", "C5-90 FBP Weight (%)": 15.0, "90-160 IBP Sign": "+", "90-160 IBP Weight (%)": 15.0, "90-160 FBP Sign": "0", "90-160 FBP Weight (%)": 0.0},
+                {"Process Variable": "3. NSU Reflux Flow", "Feature Key": "reflux_flow", "C5-90 IBP Sign": "+", "C5-90 IBP Weight (%)": 10.0, "C5-90 FBP Sign": "-", "C5-90 FBP Weight (%)": 45.0, "90-160 IBP Sign": "-", "90-160 IBP Weight (%)": 25.0, "90-160 FBP Sign": "0", "90-160 FBP Weight (%)": 0.0},
+                {"Process Variable": "4. Side Cut Flow", "Feature Key": "side_draw", "C5-90 IBP Sign": "0", "C5-90 IBP Weight (%)": 0.0, "C5-90 FBP Sign": "+", "C5-90 FBP Weight (%)": 10.0, "90-160 IBP Sign": "+", "90-160 IBP Weight (%)": 25.0, "90-160 FBP Sign": "0", "90-160 FBP Weight (%)": 0.0},
+                {"Process Variable": "5. Reboiler MP Steam Flow (and NSU Bottom T)", "Feature Key": "reboiler_steam", "C5-90 IBP Sign": "-", "C5-90 IBP Weight (%)": 25.0, "C5-90 FBP Sign": "+", "C5-90 FBP Weight (%)": 30.0, "90-160 IBP Sign": "+", "90-160 IBP Weight (%)": 25.0, "90-160 FBP Sign": "0", "90-160 FBP Weight (%)": 0.0},
+                {"Process Variable": "6. CDU Column Top T", "Feature Key": "cdu_top_temp", "C5-90 IBP Sign": "0", "C5-90 IBP Weight (%)": 0.0, "C5-90 FBP Sign": "0", "C5-90 FBP Weight (%)": 0.0, "90-160 IBP Sign": "0", "90-160 IBP Weight (%)": 0.0, "90-160 FBP Sign": "+", "90-160 FBP Weight (%)": 100.0}
+            ])
+            st.rerun()
+            
     st.markdown("""
     #### Operational Guidelines & Gain Signs Legend:
     * **`(+)` Sign**: Increasing the Process Handle increases the Controlled Quality / Cut Point.
     * **`(-)` Sign**: Increasing the Process Handle decreases the Controlled Quality / Cut Point.
+    * **`0` Sign**: Feature has 0% impact / decoupled from target cut point.
     * **CDU Top T**: Acts as a pure Feedforward Variable fixing the 90-160 FBP envelope (100% impact).
-    * **Side Cut Flow**: Primary intermediate splitter between C5-90 FBP and 90-160 IBP with 0% impact on column boundaries.
-    * **NSU Reflux Flow**: Primary handle for lowering top-product FBP (-45%) and bottoms IBP (-25%).
-    * **Reboiler MP Steam Flow**: Primary energy handle raising top FBP (+30%) and bottoms IBP (+25%).
+    * **Gain Influence Weight Slider (λ)** in sidebar allows tuning the blend ratio between empirical ML data and the custom Gain Matrix physics above.
     """)
 
 st.sidebar.markdown("---")
 st.sidebar.write(f"Filtered Matched Records: **{len(d)}**")
 st.sidebar.write(f"Date Range: **{d.date.min().date()} → {d.date.max().date()}**")
-st.sidebar.write("Model Architecture: **Hybrid Ridge Linear + ExtraTrees Ensemble**")
+st.sidebar.write("Model Architecture: **Interactive Hybrid Ridge + ExtraTrees + Gain Matrix**")

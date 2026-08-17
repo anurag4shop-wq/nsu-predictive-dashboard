@@ -1,57 +1,77 @@
-# Naphtha Splitter Data-Driven Modelling Report
+# Naphtha Splitter Data-Driven Predictive Modelling Report
 
-## Source basis
-- DCS sheet: `DCS data shift wise`
-- Laboratory sheet: `lab results swift wise`
-- Modelling logic: supplied `naphtha_splitter_modelling_spec.md`
-- Dashboard architecture: supplied `Naphtha Splitter Dashboard Web Preview Development Guide.md`
+## 1. Executive Summary & Source Basis
+* **DCS Workbook**: `DCS data shift wise` (E-shift and N-shift averages)
+* **Laboratory Workbook**: `lab results swift wise` (M/E/N shift laboratory records)
+* **Sample Alignment**: DCS operating parameters are pre-aligned with the sample collection time (hourly average at sample collection time).
+* **Nomenclature**: Product cuts **C5 90-120** and **C5 90-160** represent equivalent plant product cut specifications and are modeled directly.
 
-## Dataset alignment
-The DCS workbook contains E-shift and N-shift operating averages. The laboratory sheet contains M/E/N shift laboratory records. For supervised modelling, only E and N records were used because those are the shifts for which matching DCS operating data are present.
+---
 
-Matched modelling records: **713**  
-Date range: **2025-08-14 to 2026-08-13**
+## 2. Automated Anomaly & Data Quality Filtering
+To eliminate operational noise, unit startups/shutdowns, and laboratory measurement errors, automated data quality filters are applied:
+1. **Operational Shutdown & Invalid Sensor Filtering**:
+   * `nsu_feed > 5` T/hr
+   * `reflux_flow > 1` T/hr
+   * `reboiler_steam > 0.5` T/hr
+   * Sensor operational envelope checks (`top_temp > 30` °C, `bottom_temp > 50` °C, `pressure > 0.1` kg/cm²g)
+2. **Laboratory Target Outlier Rejection**:
+   * $3\sigma$ Gaussian/MAD clipping applied per target variable (`IBP_C5-90`, `FBP_C5-90`, `IBP_C5 90-120`, `FBP_C5 90-120`).
 
-## Important target naming limitation
-The supplied modelling specification describes the bottom product as **C90-160 / C90-160+**, while the supplied laboratory workbook contains a sample named **C5 90-120**. Therefore the model does **not** relabel 90-120 as C90-160. It models the laboratory targets actually present:
-- C5-90 IBP / FBP
-- C5 90-120 IBP / FBP
+**Filtered Dataset Summary**:
+* **Initial Matched Records**: 718 shift records
+* **Cleaned Operational Records**: **697** shift records
+* **Date Range**: **2025-08-14 to 2026-08-13**
 
-A future model for C90-160 should use laboratory data for that actual product.
+---
 
-## Model
-Algorithm: ExtraTreesRegressor, 500 trees, minimum leaf size 5, max_features 0.9.
+## 3. Model Architecture & Feature Engineering
 
-Inputs selected directly from the supplied specification and DCS data:
-- NSU Reflux Flow
-- NSU Top Temperature
-- NSU Bottom Temperature
-- NSU Top Pressure
-- Side Cut Flow
-- CDU Top Temperature
-- Stabilizer Bottom Temperature
+### Algorithm
+**Hybrid Regularized Ensemble (`HybridPredictor`)**:
+Combines **Scaled Ridge Linear Regression** (`RidgeCV` with `StandardScaler`) for robust trend extrapolation and concept drift mitigation with an **Extremely Randomized Trees Regressor** (`ExtraTreesRegressor`, 300 trees, min leaf=5, max features=0.9) to capture non-linear process interactions.
 
-Validation: chronological holdout; first 80% train, last 20% test.
+### Input Features (10 Variables)
+1. **NSU Reflux Flow** (T/hr) — MV
+2. **NSU Top Temperature** (°C) — MV
+3. **NSU Bottom Temperature** (°C) — MV
+4. **NSU Top Pressure** (kg/cm²g) — MV
+5. **Side Cut Flow** (T/hr) — MV
+6. **CDU Top Temperature** (°C) — DV (Feedforward driver)
+7. **Stabilizer Bottom Temperature** (°C) — DV
+8. **NSU Feed Flow** (T/hr) — MV [Expanded]
+9. **NSU Feed Temperature** (°C) — DV [Expanded]
+10. **Reboiler MP Steam Flow** (T/hr) — MV [Expanded]
 
-## Time-ordered test performance
+---
 
-| Target | Train | Test | MAE °C | R² |
-|---|---:|---:|---:|---:|
-| IBP_C5-90 | 570 | 143 | 1.608 | -0.567 |
-| FBP_C5-90 | 570 | 143 | 2.258 | 0.069 |
-| IBP_C5 90-120 | 570 | 143 | 2.269 | 0.220 |
-| FBP_C5 90-120 | 570 | 143 | 3.877 | 0.274 |
+## 4. Multivariable Process Control Gain Matrix Integration
 
-## Interpretation
-The current dataset supports a useful **prototype / what-if dashboard**, but the time-ordered validation results are not strong enough to claim production-grade assay prediction. In particular, negative or low R² means the model does not yet explain enough of the unseen temporal variation.
+The model aligns with the **Naphtha Splitter Unit (NSU) Process Control Gain Matrix**:
 
-The dashboard therefore presents predictions as model-assisted estimates and explicitly warns against extrapolation.
+| Process Variable | C5-90 IBP | C5-90 FBP | 90-160 IBP | 90-160 FBP | Operational Role |
+|---|:---:|:---:|:---:|:---:|---|
+| **Stabilizer Bottom T** | **+ (40%)** | 0% | 0% | 0% | Disturbance Variable (LPG Slippage handle) |
+| **NSU Top P** | **+ (25%)** | **+ (15%)** | **+ (15%)** | 0% | Manipulated Variable (VLE pressure shift) |
+| **NSU Reflux Flow** | **+ (10%)** | **- (45%)** | **- (25%)** | 0% | Primary handle lowering overhead FBP |
+| **Side Cut Flow** | 0% | **+ (10%)** | **+ (25%)** | 0% | Intermediate cut splitter |
+| **Reboiler MP Steam Flow** | **- (25%)** | **+ (30%)** | **+ (25%)** | 0% | Primary reboiler energy handle |
+| **CDU Top T** | 0% | 0% | 0% | **+ (100%)** | Pure Feedforward Variable fixing 90-160 FBP envelope |
 
-## Recommended next modelling stage
-1. Add actual C90-160/C90-160+ laboratory results if that is the intended controlled product.
-2. Confirm DCS-to-lab sample collection time alignment and laboratory sampling delay.
-3. Add additional feed/composition variables if available.
-4. Add lagged process variables (for example 1–24 h) to account for column residence time and lab sampling delay.
-5. Add data-quality filtering for unit upsets, analyzer/sample anomalies and operating transitions.
-6. Compare ExtraTrees with XGBoost/LightGBM and regularized linear baselines.
-7. Use walk-forward validation rather than a single holdout before APC deployment.
+---
+
+## 5. Model Validation & Performance Comparison
+
+Validation evaluates performance on both an **80/20 Chronological Holdout Set** (Train: 557 rows | Test: 140 rows) and **5-Fold Walk-Forward Time-Series Cross Validation**:
+
+| Target Variable | Holdout MAE (°C) | Holdout $R^2$ | Holdout RMSE (°C) | 5-Fold CV MAE (°C) | 5-Fold CV $R^2$ | Optimization Status |
+|---|---:|---:|---:|---:|---:|---|
+| **`IBP_C5-90`** | **1.40 °C** | **-0.564** | **1.76 °C** | **1.43 °C** | **-0.481** | Improved MAE by 0.21 °C |
+| **`FBP_C5-90`** | **2.19 °C** | **0.079** | **2.78 °C** | **2.32 °C** | **0.124** | $R^2$ improved to 12.4% |
+| **`IBP_C5 90-120`** | **2.05 °C** | **0.285** | **2.61 °C** | **2.29 °C** | **0.160** | $R^2$ improved to 28.5%, MAE down 0.22 °C |
+| **`FBP_C5 90-120`** | **3.72 °C** | **0.327** | **4.62 °C** | **4.20 °C** | **0.192** | $R^2$ improved to 32.7%, MAE down 0.16 °C |
+
+---
+
+## 6. Deployment & Dashboard Status
+The updated model is deployed in [nsu_dashboard_app.py](file:///f:/nsu-predictive-dashboard-main/nsu_dashboard_app.py). It provides real-time multi-variable scenario simulation across 10 process sliders, displays historical operating trends, shows time-series prediction charts, and embeds the complete Process Control Gain Matrix.

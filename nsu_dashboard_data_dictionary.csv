@@ -1,0 +1,8 @@
+Dashboard Input,DCS Column,Model Role
+NSU Reflux Flow,NSU Reflux Flow,MV
+NSU Top Temperature,NSU Top T,MV
+NSU Bottom Temperature,NSU Bottom T,MV
+NSU Top Pressure,NSU Top P,MV
+Side Cut Flow,Side cut Flow,MV
+CDU Top Temperature,TOP T,DV
+Stabilizer Bottom Temperature,Stabilizer Bottom T,DV
